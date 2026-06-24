@@ -1,10 +1,10 @@
 """
 losses.py
----------
+
 Residual loss functions used by the trimmed smoothers.
 
 Functions
----------
+
 measurement_losses
     Per-timestep measurement loss:
         f_k(x) = 0.5 ||z_k - H x_k||_{R^{-1}}^2
@@ -19,7 +19,7 @@ summarize_innovation_loss_near_jumps
     Returns a pandas DataFrame.
 
 Usage
------
+
     from losses import (
         measurement_losses,
         compute_innovation_losses,
@@ -31,9 +31,7 @@ import numpy as np
 import pandas as pd
 
 
-# ---------------------------------------------------------------------------
 # Measurement losses
-# ---------------------------------------------------------------------------
 
 def measurement_losses(H, R, z, x_hat):
     """
@@ -41,8 +39,8 @@ def measurement_losses(H, R, z, x_hat):
 
         f_k(x) = 0.5 ||z_k - H x_k||_{R^{-1}}^2
 
-    Parameters
-    ----------
+    Parameters - 
+   
     H : np.ndarray, shape (m, n)
         Measurement matrix.
     R : np.ndarray, shape (m, m)
@@ -52,8 +50,8 @@ def measurement_losses(H, R, z, x_hat):
     x_hat : np.ndarray, shape (N, n)
         Current state estimate.
 
-    Returns
-    -------
+    Returns -
+
     losses : np.ndarray, shape (N,)
     """
     Rinv = np.linalg.inv(R)
@@ -67,11 +65,9 @@ def measurement_losses(H, R, z, x_hat):
     return losses
 
 
-# ---------------------------------------------------------------------------
 # Innovation losses
-# ---------------------------------------------------------------------------
 
-def compute_innovation_losses(x_hat, G, Q):
+def compute_innovation_losses(x_hat, G, Q, nu_signal=None):
     """
     Compute per-transition innovation residual losses.
 
@@ -81,8 +77,8 @@ def compute_innovation_losses(x_hat, G, Q):
         x_hat[:, 0] = derivative component
         x_hat[:, 1] = signal component
 
-    Parameters
-    ----------
+    Parameters - 
+  
     x_hat : np.ndarray, shape (N, n)
         Smoothed state estimates.
     G : np.ndarray, shape (n, n)
@@ -91,28 +87,40 @@ def compute_innovation_losses(x_hat, G, Q):
         Process-noise covariance.
 
     Returns
-    -------
+
     residuals : np.ndarray, shape (N-1, n)
         Innovation residuals  x_{k+1} - G x_k.
     losses : np.ndarray, shape (N-1,)
         Quadratic innovation losses.
     """
-    N = x_hat.shape[0]
+    N    = x_hat.shape[0]
+    L    = N - 1
     Qinv = np.linalg.inv(Q)
 
-    residuals = np.zeros((N - 1, x_hat.shape[1]))
-    losses    = np.zeros(N - 1)
+    if nu_signal is None:
+        nu_signal = np.ones(L)
 
-    for k in range(N - 1):
-        residuals[k] = x_hat[k + 1] - G @ x_hat[k]
-        losses[k]    = 0.5 * residuals[k].T @ Qinv @ residuals[k]
+    residuals     = np.zeros((L, x_hat.shape[1]))
+    full_losses   = np.zeros(L)
+    signal_losses = np.zeros(L)
 
-    return residuals, losses
+    for k in range(L):
+        r              = x_hat[k + 1] - G @ x_hat[k]
+        residuals[k]   = r
+        full_losses[k] = 0.5 * r @ Qinv @ r
+
+        ns = np.clip(nu_signal[k], 0.0, 1.0)
+        # gradient of 0.5 * r^T (W * Qinv) r w.r.t. ns, at nd=1
+        signal_losses[k] = 0.5 * (
+            r[0] * r[1] * Qinv[0, 1] / np.sqrt(ns + 1e-12)
+            + r[1] ** 2 * Qinv[1, 1]
+        )
+
+    return residuals, full_losses, signal_losses
 
 
-# ---------------------------------------------------------------------------
+
 # Diagnostic: innovation loss near known jump transitions
-# ---------------------------------------------------------------------------
 
 def summarize_innovation_loss_near_jumps(innovation_losses, jump_indices, radius=3):
     """

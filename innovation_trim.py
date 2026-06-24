@@ -51,7 +51,7 @@ def innovation_trimmed_kalman_smoother(
     z,
     h_innovation,
     gamma=None,
-    gamma_factor=1.0,
+    gamma_factor=0.25,
     max_iter=100,
     tol=1e-8,
     x0_prior=None,
@@ -96,6 +96,10 @@ def innovation_trimmed_kalman_smoother(
         Final smoothed state estimate.
     nu : np.ndarray, shape (N-1,)
         Final innovation weights.
+    nu_deriv: np.ndarray, shape (N-1,)
+        Final derivative innovation weights.
+    nu_signal: np.ndarray, shape (N-1,)
+        Final signal innovation weights.
     innovation_losses : np.ndarray, shape (N-1,)
         Innovation losses at the final x_hat.
     innovation_residuals : np.ndarray, shape (N-1, n)
@@ -104,83 +108,128 @@ def innovation_trimmed_kalman_smoother(
         Per-iteration diagnostics.
     """
     N = len(z)
+    L = N - 1
+
     omega = np.ones(N)
+    nu_deriv = np.ones(L)
 
-    # Initialise nu
+    # Initialize signal innovation weights
     if nu_init is None:
-        nu = np.full(N - 1, h_innovation / (N - 1))
+        nu_signal = np.full(L, h_innovation / L)
     else:
-        nu = project_capped_simplex(nu_init, h_innovation)
+        nu_signal = project_capped_simplex(nu_init, h_innovation)
 
-    # Auto stepsize from initial innovation losses
+    # Auto stepsize from initial signal-innovation losses
     if gamma is None:
         x_hat_init = weighted_batch_smoother(
-            G=G, H=H, Q=Q, R=R, z=z,
-            omega=omega, nu=nu,
-            x0_prior=x0_prior, P0=P0,
+            G=G,
+            H=H,
+            Q=Q,
+            R=R,
+            z=z,
+            omega=omega,
+            nu_deriv=nu_deriv,
+            nu_signal=nu_signal,
+            x0_prior=x0_prior,
+            P0=P0,
         )
-        _, init_losses = compute_innovation_losses(x_hat_init, G, Q)
-        max_init_loss  = np.max(init_losses)
-        gamma          = gamma_factor / (max_init_loss + 1e-12)
+
+        _, _, init_signal_losses = compute_innovation_losses(
+            x_hat_init,
+            G,
+            Q,
+            nu_signal=nu_signal,
+        )
+
+        max_init_loss = np.max(init_signal_losses)
+        gamma = gamma_factor / (max_init_loss + 1e-12)
 
         if verbose:
-            print(f"Auto innovation gamma = {gamma:.6g}")
-            print(f"Max initial innovation loss = {max_init_loss:.6g}")
+            print(f"Auto signal-innovation gamma = {gamma:.6g}")
+            print(f"Max initial signal-innovation loss = {max_init_loss:.6g}")
 
     history = []
 
     for it in range(max_iter):
+        nu_old = nu_signal.copy()
+
         # Step 1: weighted smoother
         x_hat = weighted_batch_smoother(
-            G=G, H=H, Q=Q, R=R, z=z,
-            omega=omega, nu=nu,
-            x0_prior=x0_prior, P0=P0,
+            G=G,
+            H=H,
+            Q=Q,
+            R=R,
+            z=z,
+            omega=omega,
+            nu_deriv=nu_deriv,
+            nu_signal=nu_signal,
+            x0_prior=x0_prior,
+            P0=P0,
         )
 
-        # Step 2: innovation losses
-        _, g = compute_innovation_losses(x_hat, G, Q)
+        # Step 2: signal-component innovation losses
+        innovation_residuals, full_losses, signal_losses = compute_innovation_losses(
+            x_hat,
+            G,
+            Q,
+            nu_signal=nu_signal,
+        )
 
-        # Step 3: projected-gradient weight update
-        nu_new    = project_capped_simplex(nu - gamma * g, h_innovation)
-        nu_change = np.linalg.norm(nu_new - nu)
+        # Step 3: projected-gradient update on signal innovation weights
+        nu_signal_new = project_capped_simplex(
+            nu_signal - gamma * signal_losses,
+            h_innovation,
+        )
+
+        nu_change = np.linalg.norm(nu_signal_new - nu_signal)
 
         history.append({
-            "iteration":            it,
-            "nu_change":            nu_change,
-            "min_nu":               np.min(nu_new),
-            "max_nu":               np.max(nu_new),
-            "max_innovation_loss":  np.max(g),
-            "mean_innovation_loss": np.mean(g),
-            "gamma":                gamma,
+            "iteration": it,
+            "nu_signal_change": nu_change,
+            "min_nu_signal": np.min(nu_signal_new),
+            "max_nu_signal": np.max(nu_signal_new),
+            "max_signal_innovation_loss": np.max(signal_losses),
+            "mean_signal_innovation_loss": np.mean(signal_losses),
+            "max_full_innovation_loss": np.max(full_losses),
+            "gamma": gamma,
         })
 
         if verbose:
             print(
                 f"iter {it:02d} | "
-                f"nu change = {nu_change:.3e} | "
-                f"min nu = {np.min(nu_new):.3f} | "
-                f"max nu = {np.max(nu_new):.3f} | "
-                f"max loss = {np.max(g):.3e}"
+                f"nu_signal change = {nu_change:.3e} | "
+                f"min nu_signal = {np.min(nu_signal_new):.3f} | "
+                f"max nu_signal = {np.max(nu_signal_new):.3f} | "
+                f"max signal loss = {np.max(signal_losses):.3e}"
             )
 
-        nu = nu_new
+        nu_signal = nu_signal_new
 
         if nu_change < tol:
             break
 
-    # Final estimate at converged weights
+    # Final estimate
     x_hat = weighted_batch_smoother(
-        G=G, H=H, Q=Q, R=R, z=z,
-        omega=omega, nu=nu,
-        x0_prior=x0_prior, P0=P0,
+        G=G,
+        H=H,
+        Q=Q,
+        R=R,
+        z=z,
+        omega=omega,
+        nu_deriv=nu_deriv,
+        nu_signal=nu_signal,
+        x0_prior=x0_prior,
+        P0=P0,
     )
-    innovation_residuals, innovation_losses = compute_innovation_losses(
-        x_hat, G, Q
+
+    innovation_residuals, full_losses, signal_losses = compute_innovation_losses(
+        x_hat,
+        G,
+        Q,
     )
 
-    return x_hat, nu, innovation_losses, innovation_residuals, history
-
-
+    return x_hat, nu_signal, signal_losses, innovation_residuals, history
+    
 # ---------------------------------------------------------------------------
 # Warm-start helper
 # ---------------------------------------------------------------------------
