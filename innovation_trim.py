@@ -94,14 +94,10 @@ def innovation_trimmed_kalman_smoother(
     -------
     x_hat : np.ndarray, shape (N, n)
         Final smoothed state estimate.
-    nu : np.ndarray, shape (N-1,)
-        Final innovation weights.
-    nu_deriv: np.ndarray, shape (N-1,)
-        Final derivative innovation weights.
     nu_signal: np.ndarray, shape (N-1,)
         Final signal innovation weights.
-    innovation_losses : np.ndarray, shape (N-1,)
-        Innovation losses at the final x_hat.
+    signal_losses : np.ndarray, shape (N-1,)
+        Final signal-component innovation losses.
     innovation_residuals : np.ndarray, shape (N-1, n)
         Innovation residuals at the final x_hat.
     history : list of dict
@@ -226,6 +222,7 @@ def innovation_trimmed_kalman_smoother(
         x_hat,
         G,
         Q,
+        nu_signal=np.ones(N-1)
     )
 
     return x_hat, nu_signal, signal_losses, innovation_residuals, history

@@ -110,9 +110,10 @@ def compute_innovation_losses(x_hat, G, Q, nu_signal=None):
         full_losses[k] = 0.5 * r @ Qinv @ r
 
         ns = np.clip(nu_signal[k], 0.0, 1.0)
+        nd = 1.0
         # gradient of 0.5 * r^T (W * Qinv) r w.r.t. ns, at nd=1
         signal_losses[k] = 0.5 * (
-            r[0] * r[1] * Qinv[0, 1] / np.sqrt(ns + 1e-12)
+            r[0] * r[1] * Qinv[0, 1] * np.sqrt(nd)/ np.sqrt(ns + 1e-12)
             + r[1] ** 2 * Qinv[1, 1]
         )
 
