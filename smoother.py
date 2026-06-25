@@ -30,8 +30,6 @@ def weighted_batch_smoother(
     z,
     omega=None,     # measurement weights, shape (N,)
     nu=None,        # innovation weights, shape (N-1,)
-    nu_deriv = None,  # derivative innovation weights, shape (N-1,)
-    nu_signal = None, # signal innovation weights, shape (N-1,)
     x0_prior=None,
     P0=None,
 ):
@@ -54,14 +52,6 @@ def weighted_batch_smoother(
         Per-measurement weights.  Defaults to all-ones.
     nu : np.ndarray, shape (N-1,), optional
         Per-innovation weights.  Defaults to all-ones.
-    nu_deriv : np.ndarray, shape (N-1,), optional
-        Per-transition weights on the derivative innovation component.
-        Used together with nu_signal for component-wise trimming.
-        When provided alongside nu_signal, takes priority over nu.
-    nu_signal : np.ndarray, shape (N-1,), optional
-        Per-transition weights on the signal innovation component.
-        Set nu_signal[k] near 0 to allow a free signal jump at transition k
-        while keeping the derivative constrained via nu_deriv.
     x0_prior : np.ndarray, shape (n,), optional
         Prior mean on the initial state.  Defaults to zeros.
     P0 : np.ndarray, shape (n, n), optional
@@ -102,31 +92,13 @@ def weighted_batch_smoother(
     A[block(0), block(0)] += P0inv
     b[block(0)]           += P0inv @ x0_prior
 
-    # Weighted innovation terms  (k -> k+1)
+    
     for k in range(N - 1):
         curr = block(k)
         nxt  = block(k + 1)
 
-        # --------------------------------------------------
-        # Innovation precision matrix for transition k
-        # --------------------------------------------------
-
-        if nu_deriv is not None and nu_signal is not None:
-            nd = np.clip(nu_deriv[k], 0.0, 1.0)
-            ns = np.clip(nu_signal[k], 0.0, 1.0)
-            W  = np.array([[nd,              np.sqrt(nd * ns)],
-                   [np.sqrt(nd * ns), ns             ]])
-            Pk = W * Qinv
-        else:
-            Pk = nu[k] * Qinv
-
-    
-
-        # --------------------------------------------------
-        # Add innovation cost:
-        # 0.5 * (X_{k+1} - G X_k)^T Pk (X_{k+1} - G X_k)
-        # --------------------------------------------------
-
+        Pk = nu[k] * Qinv
+        
         A[curr, curr] += G.T @ Pk @ G
         A[curr, nxt]  += -G.T @ Pk
         A[nxt, curr]  += -Pk @ G

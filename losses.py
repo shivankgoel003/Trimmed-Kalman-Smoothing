@@ -4,13 +4,13 @@ losses.py
 Residual loss functions used by the trimmed smoothers.
 
 Functions
-
+---------
 measurement_losses
     Per-timestep measurement loss:
         f_k(x) = 0.5 ||z_k - H x_k||_{R^{-1}}^2
 
 compute_innovation_losses
-    Per-transition innovation loss:
+    Per-transition scalar innovation loss:
         g_k(x) = 0.5 ||x_{k+1} - G x_k||_{Q^{-1}}^2
 
 summarize_innovation_loss_near_jumps
@@ -19,7 +19,7 @@ summarize_innovation_loss_near_jumps
     Returns a pandas DataFrame.
 
 Usage
-
+-----
     from losses import (
         measurement_losses,
         compute_innovation_losses,
@@ -31,7 +31,9 @@ import numpy as np
 import pandas as pd
 
 
+# ---------------------------------------------------------------------------
 # Measurement losses
+# ---------------------------------------------------------------------------
 
 def measurement_losses(H, R, z, x_hat):
     """
@@ -39,8 +41,8 @@ def measurement_losses(H, R, z, x_hat):
 
         f_k(x) = 0.5 ||z_k - H x_k||_{R^{-1}}^2
 
-    Parameters - 
-   
+    Parameters
+    ----------
     H : np.ndarray, shape (m, n)
         Measurement matrix.
     R : np.ndarray, shape (m, m)
@@ -50,35 +52,44 @@ def measurement_losses(H, R, z, x_hat):
     x_hat : np.ndarray, shape (N, n)
         Current state estimate.
 
-    Returns -
-
+    Returns
+    -------
     losses : np.ndarray, shape (N,)
+        Per-measurement quadratic losses.
     """
+    z = np.asarray(z)
     Rinv = np.linalg.inv(R)
-    N = len(z)
+
+    N = x_hat.shape[0]
     losses = np.zeros(N)
 
     for k in range(N):
-        residual = np.array([z[k]]) - H @ x_hat[k]
+        # Supports both scalar measurements z[k] and vector measurements z[k, :]
+        zk = np.atleast_1d(z[k])
+        residual = zk - H @ x_hat[k]
         losses[k] = 0.5 * float(residual.T @ Rinv @ residual)
 
     return losses
 
 
-# Innovation losses
+# ---------------------------------------------------------------------------
+# Scalar innovation losses
+# ---------------------------------------------------------------------------
 
-def compute_innovation_losses(x_hat, G, Q, nu_signal=None):
+def compute_innovation_losses(x_hat, G, Q):
     """
-    Compute per-transition innovation residual losses.
+    Compute per-transition scalar innovation residual losses.
 
         g_k(x) = 0.5 ||x_{k+1} - G x_k||_{Q^{-1}}^2
 
-    State convention assumed here:
-        x_hat[:, 0] = derivative component
-        x_hat[:, 1] = signal component
+    This is the correct loss/gradient for scalar innovation trimming:
 
-    Parameters - 
-  
+        0.5 * sum_k nu_k * ||x_{k+1} - G x_k||_{Q^{-1}}^2
+
+    where one scalar weight nu_k is assigned to the whole transition.
+
+    Parameters
+    ----------
     x_hat : np.ndarray, shape (N, n)
         Smoothed state estimates.
     G : np.ndarray, shape (n, n)
@@ -87,41 +98,33 @@ def compute_innovation_losses(x_hat, G, Q, nu_signal=None):
         Process-noise covariance.
 
     Returns
-
+    -------
     residuals : np.ndarray, shape (N-1, n)
-        Innovation residuals  x_{k+1} - G x_k.
+        Innovation residuals:
+            x_{k+1} - G x_k
+
     losses : np.ndarray, shape (N-1,)
-        Quadratic innovation losses.
+        Full scalar innovation losses:
+            0.5 * residual.T @ Q^{-1} @ residual
     """
-    N    = x_hat.shape[0]
-    L    = N - 1
+    N = x_hat.shape[0]
+    L = N - 1
     Qinv = np.linalg.inv(Q)
 
-    if nu_signal is None:
-        nu_signal = np.ones(L)
-
-    residuals     = np.zeros((L, x_hat.shape[1]))
-    full_losses   = np.zeros(L)
-    signal_losses = np.zeros(L)
+    residuals = np.zeros((L, x_hat.shape[1]))
+    losses = np.zeros(L)
 
     for k in range(L):
-        r              = x_hat[k + 1] - G @ x_hat[k]
-        residuals[k]   = r
-        full_losses[k] = 0.5 * r @ Qinv @ r
+        r = x_hat[k + 1] - G @ x_hat[k]
+        residuals[k] = r
+        losses[k] = 0.5 * float(r.T @ Qinv @ r)
 
-        ns = np.clip(nu_signal[k], 0.0, 1.0)
-        nd = 1.0
-        # gradient of 0.5 * r^T (W * Qinv) r w.r.t. ns, at nd=1
-        signal_losses[k] = 0.5 * (
-            r[0] * r[1] * Qinv[0, 1] * np.sqrt(nd)/ np.sqrt(ns + 1e-12)
-            + r[1] ** 2 * Qinv[1, 1]
-        )
-
-    return residuals, full_losses, signal_losses
+    return residuals, losses
 
 
-
+# ---------------------------------------------------------------------------
 # Diagnostic: innovation loss near known jump transitions
+# ---------------------------------------------------------------------------
 
 def summarize_innovation_loss_near_jumps(innovation_losses, jump_indices, radius=3):
     """
@@ -133,38 +136,44 @@ def summarize_innovation_loss_near_jumps(innovation_losses, jump_indices, radius
     innovation_losses : np.ndarray, shape (N-1,)
         Per-transition innovation losses.
     jump_indices : array-like
-        Indices of the true state jumps (i.e. the *state* index k
-        at which the jump occurs; the corresponding transition is k-1).
+        Indices of the true state jumps. If a jump occurs at state index k,
+        the corresponding transition is k - 1.
     radius : int
         Half-width of the search window around each transition.
 
     Returns
     -------
-    pd.DataFrame with columns:
-        jump_idx, transition_idx, local_peak_idx,
-        distance_from_jump_transition,
-        innovation_loss_at_transition,
-        max_innovation_loss_near_jump
+    pd.DataFrame
+        Columns:
+            jump_idx,
+            transition_idx,
+            local_peak_idx,
+            distance_from_jump_transition,
+            innovation_loss_at_transition,
+            max_innovation_loss_near_jump
     """
     rows = []
 
     for jump_idx in jump_indices:
         transition_idx = jump_idx - 1
 
-        left  = max(0, transition_idx - radius)
+        if transition_idx < 0 or transition_idx >= len(innovation_losses):
+            continue
+
+        left = max(0, transition_idx - radius)
         right = min(len(innovation_losses), transition_idx + radius + 1)
 
-        local_losses   = innovation_losses[left:right]
-        local_argmax   = np.argmax(local_losses)
+        local_losses = innovation_losses[left:right]
+        local_argmax = np.argmax(local_losses)
         local_peak_idx = left + local_argmax
 
         rows.append({
-            "jump_idx":                         jump_idx,
-            "transition_idx":                   transition_idx,
-            "local_peak_idx":                   local_peak_idx,
-            "distance_from_jump_transition":    abs(local_peak_idx - transition_idx),
-            "innovation_loss_at_transition":    innovation_losses[transition_idx],
-            "max_innovation_loss_near_jump":    innovation_losses[local_peak_idx],
+            "jump_idx": jump_idx,
+            "transition_idx": transition_idx,
+            "local_peak_idx": local_peak_idx,
+            "distance_from_jump_transition": abs(local_peak_idx - transition_idx),
+            "innovation_loss_at_transition": innovation_losses[transition_idx],
+            "max_innovation_loss_near_jump": innovation_losses[local_peak_idx],
         })
 
     return pd.DataFrame(rows)
